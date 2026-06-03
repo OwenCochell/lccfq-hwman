@@ -24,6 +24,7 @@ Note: this is a developer tool, intentionally kept out of the pytest suite.
 from __future__ import annotations
 
 import argparse
+import difflib
 import sys
 from typing import Any, Dict, List, Tuple
 
@@ -169,14 +170,16 @@ def _specs_equal(a: list, b: list) -> bool:
 
 
 def _diff_calls(old: List[Call], new: List[Call]) -> List[str]:
+    """Align the two call sequences and show insertions/deletions cleanly.
+
+    Uses difflib so that a single inserted/removed call shows as one ``+``/``-``
+    line rather than misaligning (and appearing to reorder) everything after it.
+    """
+    old_fmt = [_fmt_call(c) for c in old]
+    new_fmt = [_fmt_call(c) for c in new]
     lines = []
-    for i in range(max(len(old), len(new))):
-        o = old[i] if i < len(old) else None
-        n = new[i] if i < len(new) else None
-        if o is None or n is None or _normalize(o) != _normalize(n):
-            marker = "  " if (o is not None and n is not None and _normalize(o) == _normalize(n)) else "* "
-            lines.append(f"  {marker}[{i}] OLD: {_fmt_call(o) if o else '<none>'}")
-            lines.append(f"  {marker}    NEW: {_fmt_call(n) if n else '<none>'}")
+    for line in difflib.unified_diff(old_fmt, new_fmt, fromfile="OLD", tofile="NEW", lineterm="", n=1):
+        lines.append(f"    {line}")
     return lines
 
 
@@ -261,7 +264,7 @@ def main() -> int:
                 print(f"    OLD: {[_fmt_spec(s) for s in old_specs]}")
                 print(f"    NEW: {[_fmt_spec(s) for s in new_specs]}")
             if not calls_ok:
-                print("  call sequence differs (lines marked * differ):")
+                print("  call sequence differs (unified diff, OLD -> NEW):")
                 for line in _diff_calls(old_calls, new_calls):
                     print(line)
 
