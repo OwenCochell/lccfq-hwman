@@ -21,6 +21,7 @@ serialization with a single running time cursor.
 """
 
 from dataclasses import dataclass
+import pprint
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -53,6 +54,8 @@ _DEFAULT_CFG: Dict[str, Any] = {
     "q_dac_ch": 0,
     "ro_dac_ch": 1,
     "ro_adc_ch": 0,
+    # Sample rate for raw-waveform export, in samples per microsecond (Msps).
+    "sample_rate_msps": 1000.0,
 }
 
 # Number of samples used to render a gaussian envelope.
@@ -76,6 +79,32 @@ class PulseEvent:
     label: str  # gate annotation, e.g. "x", "rx", "y (φ=90°)"
     freq: float  # MHz (informational)
     phase: float  # radians (informational)
+
+
+@dataclass
+class Waveform:
+    """Raw PCM samples for a single played pulse, with its start time.
+
+    The samples are the real amplitude envelope (gaussian array or constant
+    rectangle); ``freq`` and ``phase`` are carried as metadata rather than mixed
+    into the samples. Only the played region is stored, so a channel's full
+    timeline is the sparse list of these objects (no zeros in between).
+    """
+
+    row_key: str  # grouping key matching :class:`PulseEvent.row_key`
+    row_label: str  # human-readable channel label
+    t_start: float  # microseconds
+    sample_rate: float  # samples per microsecond (Msps)
+    samples: np.ndarray  # real envelope amplitudes (0..1)
+    shape: str  # 'gauss' or 'const'
+    label: str  # gate annotation
+    freq: float  # MHz (informational)
+    phase: float  # radians (informational)
+
+    @property
+    def t_end(self) -> float:
+        """End time of the played region, in microseconds."""
+        return self.t_start + len(self.samples) / self.sample_rate
 
 
 def _resolve_cfg(cfg: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -173,6 +202,69 @@ def build_pulse_events(circuit: Circuit, cfg: Optional[Dict[str, Any]] = None) -
         cursor += duration
 
     return events
+
+
+def _sample_event(event: PulseEvent, cfg: Dict[str, Any], sample_rate: float) -> np.ndarray:
+    """Render one pulse event to a real amplitude-envelope sample array.
+
+    Returns an empty array for events that are not played waveforms (e.g. the
+    ADC ``acquire`` window).
+    """
+    n = max(1, int(round(event.duration * sample_rate)))
+    t = event.t_start + np.arange(n) / sample_rate
+    if event.shape == "gauss":
+        sigma = cfg["q_pi_sigma"]
+        center = event.t_start + event.duration / 2.0
+        return event.amplitude * np.exp(-((t - center) ** 2) / (2.0 * sigma**2))
+    if event.shape == "const":
+        return np.full(n, float(event.amplitude))
+    return np.empty(0)
+
+
+def build_circuit_waveforms(
+    circuit: Circuit, cfg: Optional[Dict[str, Any]] = None
+) -> Dict[str, List[Waveform]]:
+    """Reconstruct the sparse raw-waveform (PCM) data for a circuit.
+
+    Each played pulse is sampled to a real amplitude envelope and returned with
+    its start time. The result is grouped by channel and is sparse: only the
+    played regions are stored (no zero-fill between pulses), so a qubit that
+    plays two pulses yields a list of two :class:`Waveform` objects on its row.
+
+    The sample rate is read from ``cfg['sample_rate_msps']`` (samples per
+    microsecond), falling back to the module default. ADC acquisition windows
+    are not played waveforms and are excluded.
+
+    Args:
+        circuit: Circuit to render. Validated before use.
+        cfg: Optional tuning values; missing keys fall back to display defaults.
+
+    Returns:
+        A dict mapping channel ``row_key`` to a list of :class:`Waveform`
+        objects in execution order.
+    """
+    resolved = _resolve_cfg(cfg)
+    sample_rate = resolved["sample_rate_msps"]
+    events = build_pulse_events(circuit, resolved)
+
+    waveforms: Dict[str, List[Waveform]] = {}
+    for event in events:
+        if event.shape == "acquire":
+            continue
+        waveforms.setdefault(event.row_key, []).append(
+            Waveform(
+                row_key=event.row_key,
+                row_label=event.row_label,
+                t_start=event.t_start,
+                sample_rate=sample_rate,
+                samples=_sample_event(event, resolved, sample_rate),
+                shape=event.shape,
+                label=event.label,
+                freq=event.freq,
+                phase=event.phase,
+            )
+        )
+    return waveforms
 
 
 def _row_order(events: List[PulseEvent], circuit: Circuit, cfg: Dict[str, Any]) -> List[str]:
@@ -323,3 +415,17 @@ if __name__ == "__main__":
     out_path = "pulse_diagram.png"
     figure.savefig(out_path, dpi=150)
     print(f"Wrote pulse diagram to {out_path}")
+
+    # Sparse raw-waveform (PCM) export: one list of Waveforms per channel.
+    waveforms = build_circuit_waveforms(test_circuit, demo_cfg)
+    print("\nRaw waveforms (sparse):")
+    for row_key, wfs in waveforms.items():
+        print(f"  {row_key}:")
+        for wf in wfs:
+            print(
+                f"    {wf.label:>12}  t=[{wf.t_start:.3f}, {wf.t_end:.3f}] µs"
+                f"  {len(wf.samples)} samples @ {wf.sample_rate:g} Msps"
+                f"  peak={wf.samples.max():.3f}"
+            )
+
+    pprint.pp(waveforms)

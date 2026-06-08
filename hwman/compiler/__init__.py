@@ -25,7 +25,12 @@ from hwman.compiler.circuit_program import (
     CircuitProgram,
     validate,
 )
-from hwman.compiler.pulse_diagram import plot_circuit_pulses, build_pulse_events
+from hwman.compiler.pulse_diagram import (
+    plot_circuit_pulses,
+    build_pulse_events,
+    build_circuit_waveforms,
+    Waveform,
+)
 
 __all__ = [
     "build_circuit_sweep",
@@ -36,4 +41,6 @@ __all__ = [
     "QICKProgramGenerator",
     "plot_circuit_pulses",
     "build_pulse_events",
+    "build_circuit_waveforms",
+    "Waveform",
 ]
