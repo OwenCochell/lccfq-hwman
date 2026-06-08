@@ -19,5 +19,18 @@ Usage:
 """
 
 from hwman.compiler.qick_codegen import compile_circuit_to_qick, QICKProgramGenerator
+from hwman.compiler.circuit_program import (
+    build_circuit_sweep,
+    measured_qubits_in_order,
+    CircuitProgram,
+    validate,
+)
 
-__all__ = ['compile_circuit_to_qick', 'QICKProgramGenerator']
+__all__ = [
+    "build_circuit_sweep",
+    "measured_qubits_in_order",
+    "CircuitProgram",
+    "validate",
+    "compile_circuit_to_qick",
+    "QICKProgramGenerator"
+]

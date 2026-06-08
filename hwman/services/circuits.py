@@ -23,7 +23,7 @@ from hwman.services import Service
 from hwman.services.readout_calibrator import ReadoutCalibrator
 from hwman.utils.hw_tests import generate_id
 from hwman.compiler.circuit import Circuit
-from hwman.compiler.qick_codegen import QICKProgramGenerator, compile_circuit_to_qick
+from hwman.compiler.circuit_program import build_circuit_sweep, measured_qubits_in_order
 
 logger = logging.getLogger(__name__)
 
@@ -171,18 +171,16 @@ class CircuitService(Service, CircuitsServicer):
             raise RuntimeError(
                 "No QICK connection available. Provide a conf object at initialization."
             )
-        generator = QICKProgramGenerator(circuit)
-        measured_qubits = generator._get_measured_qubits_in_order()
+        measured_qubits = measured_qubits_in_order(circuit)
 
-        source = compile_circuit_to_qick(circuit)
+        sweep = build_circuit_sweep(circuit)
 
-        ns: Dict[str, Any] = {}
-        exec(source, ns)
         prev_reps = self.conf.params.qick.default_reps()
         self.conf.params.qick.default_reps(1)
         try:
-            sweep = ns["CompiledProgram"]()
-            data_loc, _ = run_and_save_sweep(sweep, str(self.data_dir), circuit.pid, source_code=str({source}))
+            data_loc, _ = run_and_save_sweep(
+                sweep, str(self.data_dir), circuit.pid, source_code=repr(circuit)
+            )
         finally:
             self.conf.params.qick.default_reps(prev_reps)
 
