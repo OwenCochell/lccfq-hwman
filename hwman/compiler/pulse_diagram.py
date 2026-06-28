@@ -37,6 +37,7 @@ from hwman.compiler.circuit_program import (
     unique_qubits,
     validate,
 )
+from hwman.compiler.custom_pulses import CustomPulseDefinition, get_custom_pulses
 
 # Default tuning values, used to fill any keys missing from the caller's cfg so
 # the diagram renders even with no config. Times are in microseconds, gains are
@@ -75,10 +76,11 @@ class PulseEvent:
     t_start: float  # microseconds
     duration: float  # microseconds
     amplitude: float  # normalized gain (0..1)
-    shape: str  # 'gauss', 'const', or 'acquire'
+    shape: str  # 'gauss', 'const', 'custom', or 'acquire'
     label: str  # gate annotation, e.g. "x", "rx", "y (φ=90°)"
     freq: float  # MHz (informational)
     phase: float  # radians (informational)
+    envelope: Optional[CustomPulseDefinition] = None  # raw I/Q data, shape == 'custom' only
 
 
 @dataclass
@@ -96,7 +98,7 @@ class Waveform:
     t_start: float  # microseconds
     sample_rate: float  # samples per microsecond (Msps)
     samples: np.ndarray  # real envelope amplitudes (0..1)
-    shape: str  # 'gauss' or 'const'
+    shape: str  # 'gauss', 'const', or 'custom'
     label: str  # gate annotation
     freq: float  # MHz (informational)
     phase: float  # radians (informational)
@@ -122,7 +124,11 @@ def _gate_label(symbol: str, phase: float) -> str:
     return symbol
 
 
-def build_pulse_events(circuit: Circuit, cfg: Optional[Dict[str, Any]] = None) -> List[PulseEvent]:
+def build_pulse_events(
+    circuit: Circuit,
+    cfg: Optional[Dict[str, Any]] = None,
+    custom_pulses: Optional[Dict[str, CustomPulseDefinition]] = None,
+) -> List[PulseEvent]:
     """Reconstruct the per-channel pulse timeline for a circuit.
 
     Walks the flattened operation list exactly as
@@ -133,11 +139,16 @@ def build_pulse_events(circuit: Circuit, cfg: Optional[Dict[str, Any]] = None) -
     Args:
         circuit: Circuit to render. Validated before use.
         cfg: Optional tuning values; missing keys fall back to display defaults.
+        custom_pulses: Custom pulse registry. Defaults to the active registry
+            loaded via :func:`~hwman.compiler.custom_pulses.set_custom_pulses`.
 
     Returns:
         A list of :class:`PulseEvent` in execution order.
     """
-    validate(circuit)
+    if custom_pulses is None:
+        custom_pulses = get_custom_pulses()
+
+    validate(circuit, custom_pulses)
     cfg = _resolve_cfg(cfg)
 
     gauss_len = cfg["q_pi_n_sigma"] * cfg["q_pi_sigma"]
@@ -146,9 +157,9 @@ def build_pulse_events(circuit: Circuit, cfg: Optional[Dict[str, Any]] = None) -
 
     for gate, target, _ in _flatten_operations(circuit):
         symbol = gate.symbol.lower()
-        gate_cfg = GATE_LIBRARY[symbol]
 
         if symbol == MEASURE:
+            gate_cfg = GATE_LIBRARY[symbol]
             # Readout drive pulse on the readout DAC.
             events.append(
                 PulseEvent(
@@ -183,25 +194,53 @@ def build_pulse_events(circuit: Circuit, cfg: Optional[Dict[str, Any]] = None) -
             if gate.params:
                 gain = cfg["q_pi_gain"] * gate.params[0] / np.pi
             ch = CircuitProgram._qubit_gen_ch(cfg, target)
+
+            if symbol in GATE_LIBRARY:
+                gate_cfg = GATE_LIBRARY[symbol]
+                shape = "gauss"
+                duration = gauss_len
+                phase = gate_cfg.phase
+                envelope = None
+            else:
+                envelope = custom_pulses[symbol]
+                shape = "custom"
+                duration = envelope.duration_us
+                phase = 0.0
+
             events.append(
                 PulseEvent(
                     row_key=f"q{ch}",
                     row_label=f"qubit DAC ch{ch} (q{target})",
                     t_start=cursor,
-                    duration=gauss_len,
+                    duration=duration,
                     amplitude=gain,
-                    shape="gauss",
-                    label=_gate_label(symbol, gate_cfg.phase),
+                    shape=shape,
+                    label=_gate_label(symbol, phase),
                     freq=cfg["q_freq"],
-                    phase=gate_cfg.phase,
+                    phase=phase,
+                    envelope=envelope,
                 )
             )
-            duration = gauss_len
 
         # delay_auto barrier: the next operation starts after this one ends.
         cursor += duration
 
     return events
+
+
+def _custom_envelope_at(event: PulseEvent, t: np.ndarray) -> np.ndarray:
+    """Interpolate a custom pulse's I/Q magnitude envelope onto times ``t`` (µs).
+
+    The envelope is the magnitude ``|I + jQ|`` of the raw PCM data, scaled by
+    the event's gain, resampled from the pulse's own ``sample_rate_msps`` onto
+    the caller's time axis.
+    """
+    pulse = event.envelope
+    assert pulse is not None, "custom-shaped event must carry its CustomPulseDefinition"
+    idata, qdata = pulse.to_arrays()
+    magnitude = np.hypot(idata, qdata)
+    src_t = event.t_start + np.arange(len(magnitude)) / pulse.sample_rate_msps
+    return event.amplitude * np.interp(t, src_t, magnitude, left=0.0, right=0.0)
 
 
 def _sample_event(event: PulseEvent, cfg: Dict[str, Any], sample_rate: float) -> np.ndarray:
@@ -218,11 +257,15 @@ def _sample_event(event: PulseEvent, cfg: Dict[str, Any], sample_rate: float) ->
         return event.amplitude * np.exp(-((t - center) ** 2) / (2.0 * sigma**2))
     if event.shape == "const":
         return np.full(n, float(event.amplitude))
+    if event.shape == "custom":
+        return _custom_envelope_at(event, t)
     return np.empty(0)
 
 
 def build_circuit_waveforms(
-    circuit: Circuit, cfg: Optional[Dict[str, Any]] = None
+    circuit: Circuit,
+    cfg: Optional[Dict[str, Any]] = None,
+    custom_pulses: Optional[Dict[str, CustomPulseDefinition]] = None,
 ) -> Dict[str, List[Waveform]]:
     """Reconstruct the sparse raw-waveform (PCM) data for a circuit.
 
@@ -238,6 +281,8 @@ def build_circuit_waveforms(
     Args:
         circuit: Circuit to render. Validated before use.
         cfg: Optional tuning values; missing keys fall back to display defaults.
+        custom_pulses: Custom pulse registry. Defaults to the active registry
+            loaded via :func:`~hwman.compiler.custom_pulses.set_custom_pulses`.
 
     Returns:
         A dict mapping channel ``row_key`` to a list of :class:`Waveform`
@@ -245,7 +290,7 @@ def build_circuit_waveforms(
     """
     resolved = _resolve_cfg(cfg)
     sample_rate = resolved["sample_rate_msps"]
-    events = build_pulse_events(circuit, resolved)
+    events = build_pulse_events(circuit, resolved, custom_pulses)
 
     waveforms: Dict[str, List[Waveform]] = {}
     for event in events:
@@ -303,6 +348,11 @@ def _draw_event(ax: "matplotlib.axes.Axes", event: PulseEvent, cfg: Dict[str, An
             color="tab:green",
             linewidth=1.2,
         )
+    elif event.shape == "custom":
+        t = np.linspace(event.t_start, event.t_start + event.duration, _GAUSS_SAMPLES)
+        y = _custom_envelope_at(event, t)
+        ax.fill_between(t, 0, y, alpha=0.4, color="tab:purple")
+        ax.plot(t, y, color="tab:purple", linewidth=1.2)
     elif event.shape == "acquire":
         ax.axvspan(
             event.t_start,
@@ -327,7 +377,11 @@ def _draw_event(ax: "matplotlib.axes.Axes", event: PulseEvent, cfg: Dict[str, An
     )
 
 
-def plot_circuit_pulses(circuit: Circuit, cfg: Optional[Dict[str, Any]] = None) -> Figure:
+def plot_circuit_pulses(
+    circuit: Circuit,
+    cfg: Optional[Dict[str, Any]] = None,
+    custom_pulses: Optional[Dict[str, CustomPulseDefinition]] = None,
+) -> Figure:
     """Render a pulse diagram for a circuit and return the matplotlib Figure.
 
     Builds one stacked row per physical channel (qubit DAC generators, the
@@ -343,6 +397,8 @@ def plot_circuit_pulses(circuit: Circuit, cfg: Optional[Dict[str, Any]] = None) 
         cfg: Optional tuning values (same keys read by
             :mod:`hwman.compiler.circuit_program`); missing keys fall back to
             display defaults.
+        custom_pulses: Custom pulse registry. Defaults to the active registry
+            loaded via :func:`~hwman.compiler.custom_pulses.set_custom_pulses`.
 
     Returns:
         A :class:`matplotlib.figure.Figure` containing the pulse diagram.
@@ -354,7 +410,7 @@ def plot_circuit_pulses(circuit: Circuit, cfg: Optional[Dict[str, Any]] = None) 
     import matplotlib.pyplot as plt
 
     resolved = _resolve_cfg(cfg)
-    events = build_pulse_events(circuit, resolved)
+    events = build_pulse_events(circuit, resolved, custom_pulses)
     row_keys = _row_order(events, circuit, resolved)
 
     labels = {e.row_key: e.row_label for e in events}
