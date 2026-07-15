@@ -29,6 +29,7 @@ from cqedtoolbox.protocols.operations import (
 from hwman.grpc.protobufs_compiled.test_pb2_grpc import TestServicer  # type: ignore
 from hwman.grpc.protobufs_compiled.test_pb2 import TestRequest, TestResponse, TestType, FitParameter, ResSpecResponse, GetObservablesRequest, GetObservablesResponse, QubitObservableProto  # type: ignore
 
+from hwman.config import HwmanSettings
 from hwman.services import Service
 from hwman.services.readout_calibrator import ReadoutCalibrator
 
@@ -42,10 +43,11 @@ logger = logging.getLogger(__name__)
 class TestService(Service, TestServicer):
     NUMBER_OF_RETRIES = 10
 
-    def __init__(self, data_dir: Path, params_file: Path | None = None, fake_calibration_data: bool = False, calibrator: ReadoutCalibrator | None = None, *args: Any, **kwargs: Any) -> None:
+    def __init__(self, data_dir: Path, settings: HwmanSettings, params_file: Path | None = None, fake_calibration_data: bool = False, calibrator: ReadoutCalibrator | None = None, *args: Any, **kwargs: Any) -> None:
         logger.info("Initializing TestService")
         super().__init__(*args, **kwargs)
         self.data_dir = data_dir
+        self.settings = settings
         self.params_file = params_file
         self.fake_calibration_data = fake_calibration_data
         self.calibrator = calibrator
@@ -59,10 +61,18 @@ class TestService(Service, TestServicer):
             return
 
         try:
-            conf = setup_measurement_env()
+            conf = setup_measurement_env(self.settings)
         except Exception as e:
             logger.error("Could not import my_experiment_setup.py")
             raise e
+
+        # The board is unreachable in different ways depending on the transport:
+        # Pyro cannot resolve the name, gRPC cannot reach the qcat server.
+        not_up_yet: tuple[type[Exception], ...] = (
+            (grpc.RpcError,)
+            if self.settings.qick_transport == "grpc"
+            else (Pyro4.errors.NamingError,)
+        )
 
         # Checks connection to qick is ok.
         retries = 0
@@ -71,7 +81,7 @@ class TestService(Service, TestServicer):
                 logger.info("Attempting to connect to qick")
                 conf.config()
                 logger.info("Connected to qick")
-            except Pyro4.errors.NamingError:
+            except not_up_yet:
                 logger.warning(
                     f"Could not connect to qick, Probably still starting up, retrying in 1 second. Times attempted: {retries}"
                 )

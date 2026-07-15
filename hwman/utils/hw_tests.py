@@ -12,6 +12,9 @@ from cqedtoolbox.instruments.qick import qick_sweep_v2
 from cqedtoolbox.instruments.qick.config import QBoardConfig
 from cqedtoolbox.protocols.configs.qick_config import QickConfig
 
+from hwman.config import HwmanSettings
+from hwman.utils.qick_transport import GrpcQickConfig, build_channel_credentials
+
 logger = logging.getLogger(__name__)
 
 _params = None
@@ -55,7 +58,7 @@ def set_bandpass_filters(conf_: QBoardConfig):
     conf_.soc.rfb_set_ro_rf(conf_.config()[1]['ro_adc_ch'], 0)  # Frequency unitsh ere are in GHz
 
 
-def setup_measurement_env() -> QickConfig:
+def setup_measurement_env(settings: HwmanSettings) -> QickConfig:
     global _params
     logger.debug("Getting instrumentserver client")
     instruments = Client()
@@ -63,11 +66,24 @@ def setup_measurement_env() -> QickConfig:
     params = instruments.get_instrument("parameter_manager")
     _params = params
 
-    conf = QickConfig(
-        params=params,
-        nameserver_host="192.168.1.10",
-        nameserver_name="rfsoc",
-    )
+    conf: QickConfig
+    if settings.qick_transport == "grpc":
+        logger.info("Using qcat gRPC transport for the QICK board")
+        conf = GrpcQickConfig(
+            params=params,
+            host=settings.qick_grpc_host,
+            port=settings.qick_grpc_port,
+            channel_credentials=build_channel_credentials(settings),
+        )
+    else:
+        logger.info("Using legacy Pyro4 transport for the QICK board")
+        conf = QickConfig(
+            params=params,
+            nameserver_host=settings.pyro_ns_host,
+            nameserver_port=settings.pyro_ns_port,
+            nameserver_name=settings.pyro_proxy_name,
+        )
+
     qick_sweep_v2.config = conf  # type: ignore[assignment]
     return conf
 
