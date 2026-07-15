@@ -44,6 +44,10 @@ dev = [
 
 [tool.uv]
 package = true
+# qcat-grpc generates its protobuf stubs at build time and only requires
+# grpcio-tools>=1.60, so an unconstrained build picks the newest protoc and
+# emits gencode this project's pinned protobuf runtime refuses to load.
+build-constraint-dependencies = ["grpcio-tools==1.66.0", "protobuf==5.29.4"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -74,6 +78,7 @@ labcore = [
     "lmfit>=1.3.4",
     "watchdog>=6.0.0",
 ]
+grpc = ["qcat-grpc @ git+https://github.com/OwenCochell/qcat.git@grpc#subdirectory=qcat-python"]
 
 [tool.mypy]
 disallow_untyped_defs = true
