@@ -14,7 +14,19 @@ cert_dir = "./certs"
 instrumentserver_config_file = "./configs/serverConfig.yml"
 instrumentserver_params_file = "./configs/parameter_manager-parameter_manager.json"
 
-# Pyro nameserver settings (for QICK communication)
+# QICK transport: "grpc" talks to the qcat server on the board directly,
+# "pyro" uses the legacy Pyro4 nameserver path.
+qick_transport = "grpc"
+
+# qcat gRPC settings (used when qick_transport = "grpc")
+qick_grpc_host = "192.168.1.20"  # Address of the QICK board itself
+qick_grpc_port = 8000
+# TLS is optional; set the CA to verify the board, add cert+key for mTLS.
+# qick_grpc_tls_ca = "./certs/qick_ca.pem"
+# qick_grpc_tls_cert = "./certs/qick_client.pem"
+# qick_grpc_tls_key = "./certs/qick_client.key"
+
+# Pyro nameserver settings (only used when qick_transport = "pyro")
 pyro_proxy_name = "rfsoc"  # Must match QICK configuration
 pyro_ns_host = "localhost"
 pyro_ns_port = 8888
@@ -23,7 +35,7 @@ pyro_ns_port = 8888
 # Use an SSH alias configured in ~/.ssh/config for the QICK board connection
 qick_ssh_host = "qick_board"    # SSH alias or hostname for the QICK board
 qick_ssh_password = "xilinx"    # SSH/sudo password for the QICK board
-qick_remote_path = "/home/xilinx/jupyter_notebooks/qick/pyro4"
+qick_remote_path = "/home/xilinx/jupyter_notebooks/qick/pyro4"  # working dir on the board; holds pyro_service.py for the pyro transport
 qick_board = "ZCU216"
 qick_virtual_env = "/usr/local/share/pynq-venv"
 qick_xilinx_xrt = "/usr"

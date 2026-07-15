@@ -2,8 +2,9 @@
 
 import logging
 from pathlib import Path
+from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -44,7 +45,32 @@ class HwmanSettings(BaseSettings):
         description="Path to parameter manager JSON file",
     )
 
-    # Pyro nameserver settings
+    # QICK transport settings
+    qick_transport: Literal["grpc", "pyro"] = Field(
+        default="grpc",
+        description="Transport used to reach the QICK board: 'grpc' (qcat) or 'pyro' (legacy Pyro4)",
+    )
+    qick_grpc_host: str = Field(
+        default="",
+        description="Address of the qcat gRPC server on the QICK board (required when qick_transport='grpc')",
+    )
+    qick_grpc_port: int = Field(
+        default=8000, description="Port of the qcat gRPC server on the QICK board"
+    )
+    qick_grpc_tls_ca: Path | None = Field(
+        default=None,
+        description="CA certificate (PEM) for verifying the qcat server; enables TLS when set",
+    )
+    qick_grpc_tls_cert: Path | None = Field(
+        default=None,
+        description="Client certificate (PEM) presented to the qcat server; enables mTLS when set with qick_grpc_tls_key",
+    )
+    qick_grpc_tls_key: Path | None = Field(
+        default=None,
+        description="Client private key (PEM) paired with qick_grpc_tls_cert",
+    )
+
+    # Pyro nameserver settings (only used when qick_transport='pyro')
     pyro_proxy_name: str = Field(
         default="rfsoc", description="Name of the Pyro nameserver proxy"
     )
@@ -97,6 +123,26 @@ class HwmanSettings(BaseSettings):
                 f"Invalid log level '{v}'. Must be one of: {', '.join(valid_levels)}"
             )
         return v.upper()
+
+    @model_validator(mode="after")
+    def validate_qick_transport(self) -> "HwmanSettings":
+        """Check that the settings the selected QICK transport needs are present."""
+        if self.qick_transport != "grpc":
+            return self
+
+        if not self.qick_grpc_host and not self.fake_calibration_data:
+            raise ValueError(
+                "qick_grpc_host must be set when qick_transport='grpc' "
+                "(it is the address of the qcat server on the QICK board)"
+            )
+
+        # grpc.ssl_channel_credentials takes a key/cert pair or neither
+        if bool(self.qick_grpc_tls_cert) != bool(self.qick_grpc_tls_key):
+            raise ValueError(
+                "qick_grpc_tls_cert and qick_grpc_tls_key must be set together"
+            )
+
+        return self
 
     @classmethod
     def settings_customise_sources(
