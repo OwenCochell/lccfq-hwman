@@ -95,18 +95,23 @@ class Server:
             qick_board=self.config.qick_board,
             qick_virtual_env=self.config.qick_virtual_env,
             qick_xilinx_xrt=self.config.qick_xilinx_xrt,
+            qick_transport=self.config.qick_transport,
+            qick_grpc_port=self.config.qick_grpc_port,
         )
         health_pb2_grpc.add_HealthServicer_to_server(self.health_service, self.server)
 
         if self.start_external_services:
             self.health_service._start_instrumentserver()
-            self.health_service._start_pyro_nameserver()
+            # qcat connects straight to the board; only the pyro transport
+            # needs a nameserver to resolve the proxy through.
+            if self.config.qick_transport == "pyro":
+                self.health_service._start_pyro_nameserver()
             self.health_service._start_qick_server()
 
         calibrator = ReadoutCalibrator()
 
         logger.info("Initializing test service...")
-        self.test_service = TestService(self.data_dir, params_file=self.instrumentserver_params_file, fake_calibration_data=self.fake_calibration_data, calibrator=calibrator)
+        self.test_service = TestService(self.data_dir, settings=self.config, params_file=self.instrumentserver_params_file, fake_calibration_data=self.fake_calibration_data, calibrator=calibrator)
         test_pb2_grpc.add_TestServicer_to_server(self.test_service, self.server)
         self.test_service._start()
 
