@@ -40,6 +40,8 @@ class HealthService(Service, HealthServicer):
         qick_board: str = "ZCU216",
         qick_virtual_env: str = "/usr/local/share/pynq-venv",
         qick_xilinx_xrt: str = "/usr",
+        qick_transport: str = "grpc",
+        qick_grpc_port: int = 8000,
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -57,6 +59,8 @@ class HealthService(Service, HealthServicer):
         :param qick_board: BOARD environment variable for QICK.
         :param qick_virtual_env: Virtual environment path on remote board.
         :param qick_xilinx_xrt: XILINX_XRT path on remote board.
+        :param qick_transport: 'grpc' to serve qcat on the board, 'pyro' for the legacy pyro_service.py.
+        :param qick_grpc_port: Port the qcat server binds to on the board.
         :param args: Passed to the parent class HealthServicer.
         :param kwargs: Passed to the parent class HealthServicer.
         """
@@ -77,6 +81,8 @@ class HealthService(Service, HealthServicer):
         self.qick_board = qick_board
         self.qick_virtual_env = qick_virtual_env
         self.qick_xilinx_xrt = qick_xilinx_xrt
+        self.qick_transport = qick_transport
+        self.qick_grpc_port = qick_grpc_port
         self.qick_server_process: subprocess.Popen | None = None
 
         super().__init__(*args, **kwargs)
@@ -101,14 +107,21 @@ class HealthService(Service, HealthServicer):
         logger.info("HealthService cleanup completed.")
 
     def health_check(self) -> bool:
-        """Check the health of the instrumentserver and Pyro nameserver."""
+        """Check the health of the instrumentserver and the QICK transport."""
         instrumentserver_status, instrumentserver_message = (
             self._get_instrumentserver_status()
         )
-        pyro_nameserver_status, pyro_nameserver_message = (
-            self._get_pyro_nameserver_status()
-        )
         qick_server_status, qick_server_message = self._get_qick_server_status()
+
+        # The gRPC transport talks to the board directly, so there is no
+        # nameserver to run and its status must not gate the health check.
+        if self.qick_transport == "grpc":
+            pyro_nameserver_status = True
+        else:
+            pyro_nameserver_status, pyro_nameserver_message = (
+                self._get_pyro_nameserver_status()
+            )
+
         all_ok = (
             instrumentserver_status and pyro_nameserver_status and qick_server_status
         )
@@ -405,6 +418,16 @@ class HealthService(Service, HealthServicer):
             return False, "QICK SSH host not configured"
 
         try:
+            # The qcat server is a module on the board, the pyro service a script
+            # in qick_remote_path; everything else about the launch is the same.
+            if self.qick_transport == "grpc":
+                server_cmd = (
+                    f"sudo -S -E {self.qick_virtual_env}/bin/python "
+                    f"-m qcat_grpc.server --host 0.0.0.0 --port {self.qick_grpc_port}"
+                )
+            else:
+                server_cmd = f"sudo -S -E {self.qick_virtual_env}/bin/python pyro_service.py"
+
             # Build the remote command with configured environment variables
             remote_cmd = (
                 f"cd {self.qick_remote_path} && "
@@ -412,7 +435,7 @@ class HealthService(Service, HealthServicer):
                 f"export VIRTUAL_ENV={self.qick_virtual_env} && "
                 f"export XILINX_XRT={self.qick_xilinx_xrt} && "
                 f"export PATH={self.qick_virtual_env}/bin:$PATH && "
-                f"sudo -S -E {self.qick_virtual_env}/bin/python pyro_service.py"
+                f"{server_cmd}"
             )
 
             cmd = [
